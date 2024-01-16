@@ -1,8 +1,7 @@
 pipeline {
     agent any
     environment {
-        //be sure to replace "bhavukm" with your own Docker Hub username
-        DOCKER_IMAGE_NAME = "bhavukm/train-schedule"
+        DOCKER_IMAGE_NAME = "ajith012/train-schedule"
     }
     stages {
         stage('Build') {
@@ -13,9 +12,6 @@ pipeline {
             }
         }
         stage('Build Docker Image') {
-            when {
-                branch 'master'
-            }
             steps {
                 script {
                     app = docker.build(DOCKER_IMAGE_NAME)
@@ -26,9 +22,6 @@ pipeline {
             }
         }
         stage('Push Docker Image') {
-            when {
-                branch 'master'
-            }
             steps {
                 script {
                     docker.withRegistry('https://registry.hub.docker.com', 'docker_hub_login') {
@@ -39,41 +32,37 @@ pipeline {
             }
         }
         stage('CanaryDeploy') {
-            when {
-                branch 'master'
-            }
             environment { 
-                CANARY_REPLICAS = 1
+                CANARY_REPLICAS = 3
+                KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
+                KUBE_NAMESPACE = 'default' // Change this line to use the default namespace
+                APP_NAME = 'train-schedule'
             }
             steps {
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
+                script {
+                    // Deploy to Kubernetes using kubectl
+                    // sh "envsubst < train-schedule-kube-canary.yml | kubectl apply --kubeconfig=${KUBECONFIG_CREDENTIALS} -f - --namespace=default"
+                    sh "kubectl delete --kubeconfig=${KUBECONFIG_CREDENTIALS} deployment/train-schedule-deployment-canary --namespace=default --ignore-not-found"
+                    sh "kubectl apply --kubeconfig=${KUBECONFIG_CREDENTIALS} -f train-schedule-kube-canary.yml --namespace=${KUBE_NAMESPACE}"
+                    // Wait for the deployment to stabilize
+                    sh "kubectl rollout status --kubeconfig=${KUBECONFIG_CREDENTIALS} deployment/train-schedule-deployment-canary --namespace=${KUBE_NAMESPACE}"
+                }
             }
         }
         stage('DeployToProduction') {
-            when {
-                branch 'master'
-            }
             environment { 
                 CANARY_REPLICAS = 0
+                KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
+                KUBE_NAMESPACE = 'default'
             }
             steps {
-                input 'Deploy to Production?'
-                milestone(1)
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube-canary.yml',
-                    enableConfigSubstitution: true
-                )
-                kubernetesDeploy(
-                    kubeconfigId: 'kubeconfig',
-                    configs: 'train-schedule-kube.yml',
-                    enableConfigSubstitution: true
-                )
-            }
+        input 'Deploy to Production?'
+        milestone(1)
+        script {
+            sh "kubectl delete --kubeconfig=${KUBECONFIG_CREDENTIALS} deployment/train-schedule-deployment --namespace=default --ignore-not-found"
+            sh "kubectl apply --kubeconfig=${KUBECONFIG_CREDENTIALS} -f train-schedule-kube.yml --namespace=${KUBE_NAMESPACE}"
+        }
+    }
         }
     }
 }
